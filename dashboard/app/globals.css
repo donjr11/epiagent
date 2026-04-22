@@ -1,0 +1,109 @@
+:root {
+  --fg: #111;
+  --muted: #666;
+  --border: #ddd;
+  --accent: #1a6cff;
+  --accent-weak: #e8f0ff;
+  --bg: #fafafa;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+h1 { font-size: 24px; margin: 0 0 4px 0; }
+h2 { font-size: 16px; margin: 24px 0 8px 0; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+.card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: white;
+  cursor: pointer;
+  font-size: 14px;
+  user-select: none;
+}
+.chip.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 13px; color: var(--muted); }
+.field input, .field select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: white;
+}
+
+.row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+
+button.primary {
+  background: var(--accent);
+  color: white;
+  border: 0;
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+button.primary:disabled { opacity: 0.6; cursor: default; }
+
+table.results {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+table.results th, table.results td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 6px;
+  text-align: left;
+}
+table.results th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; }
+table.results td.score { font-variant-numeric: tabular-nums; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+.tooltip { position: relative; cursor: help; border-bottom: 1px dotted var(--muted); }
+.tooltip .tip {
+  visibility: hidden;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  min-width: 240px;
+  max-width: 360px;
+  background: #222;
+  color: white;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  z-index: 10;
+  white-space: normal;
+}
+.tooltip:hover .tip { visibility: visible; }
+
+.diag { color: #a00; padding: 12px; background: #fff4f4; border: 1px solid #fbb; border-radius: 6px; }
+.muted { color: var(--muted); font-size: 13px; }

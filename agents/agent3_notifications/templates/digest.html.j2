@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>EpiAgent Daily Digest</title></head>
+<body style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; color:#111;">
+  <h2>EpiAgent daily digest — {{ date }}</h2>
+
+  {% if new_models %}
+    <h3>New models ({{ new_models|length }})</h3>
+    <ul>
+      {% for m in new_models %}
+        <li><b>{{ m.name }}</b> ({{ m.huggingface_id }})
+            — {{ m.parameter_count_b or "?" }}B params,
+            license {{ m.license_spdx or "unknown" }}
+            {% if m.is_on_whitelist %}<span style="color:#0a7">[whitelisted]</span>
+            {% else %}<span style="color:#a00">[non-whitelist]</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if rank_changes %}
+    <h3>Significant rank changes (|Δ| ≥ {{ threshold }} in top 5)</h3>
+    <table cellpadding="4" border="1" style="border-collapse:collapse;">
+      <tr><th>Capability</th><th>Model</th><th>Prev</th><th>Now</th></tr>
+      {% for row in rank_changes %}
+      <tr><td>{{ row.capability }}</td><td>{{ row.name }}</td>
+          <td>{{ row.prev }}</td><td>{{ row.now }}</td></tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  {% if ingestion_failure %}
+    <h3 style="color:#a00">Ingestion failure</h3>
+    <pre>{{ ingestion_failure }}</pre>
+  {% endif %}
+
+  {% if not new_models and not rank_changes and not ingestion_failure %}
+    <p><i>No new models, no rank changes, no ingestion issues.</i></p>
+  {% endif %}
+
+  <hr>
+  <small>Sent by EpiAgent v0.1 · internal operators distribution.</small>
+</body>
+</html>

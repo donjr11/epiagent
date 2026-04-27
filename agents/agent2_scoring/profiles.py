@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
 from agents.agent2_scoring import bwm, capabilities
+
+log = logging.getLogger(__name__)
+
+
+class ProfileMissingError(LookupError):
+    """Raised by load_profile when no scoring_profiles row exists for a capability.
+
+    The scorer must NOT silently fall back to uniform weights (design §6.4).
+    The API layer should translate this to HTTP 503 so the operator notices.
+    """
+
+    def __init__(self, capability: str):
+        super().__init__(
+            f"No scoring_profiles row for capability '{capability}'. "
+            f"Run `python -m scripts.seed_strawman_profiles` or run the BWM CLI."
+        )
+        self.capability = capability
 
 
 @dataclass
@@ -20,24 +38,6 @@ class Profile:
     consistency_ratio: Optional[float]
 
 
-def _default_profile(capability: str) -> Profile:
-    """Uniform weights used until BWM runs for this capability."""
-    crits = [c.name for c in capabilities.CAPABILITY_CRITERIA[capability]]
-    w = {c: 1.0 / len(crits) for c in crits}
-    prefs = {
-        c: capabilities.DEFAULT_SOURCE_PREFERENCES.get(c, [])
-        for c in crits
-    }
-    return Profile(
-        capability=capability,
-        version=0,
-        criteria=crits,
-        weights=w,
-        source_preferences=prefs,
-        consistency_ratio=None,
-    )
-
-
 def load_profile(conn: sqlite3.Connection, capability: str) -> Profile:
     row = conn.execute(
         "SELECT version, criteria, weights, source_preferences, consistency_ratio "
@@ -45,7 +45,13 @@ def load_profile(conn: sqlite3.Connection, capability: str) -> Profile:
         (capability,),
     ).fetchone()
     if row is None:
-        return _default_profile(capability)
+        # Loud failure: no silent uniform-weight fallback (design §6.4).
+        log.error(
+            "scoring_profiles row missing for capability=%r; refusing to score. "
+            "Run scripts.seed_strawman_profiles or the BWM CLI.",
+            capability,
+        )
+        raise ProfileMissingError(capability)
     return Profile(
         capability=capability,
         version=int(row["version"]),
@@ -64,7 +70,14 @@ def save_profile_from_bwm(
     capability: str,
     solution: bwm.BWMSolution,
     source_preferences: dict[str, list[tuple[str, int, int]]] | None = None,
+    created_by: str = "po",
 ) -> None:
+    """Persist a BWM solution to scoring_profiles.
+
+    `created_by` is recorded inside the bwm_input JSON blob (the schema has no
+    dedicated column). Use "adam_strawman" for placeholder weights and "po" for
+    PO-elicited ones.
+    """
     if solution.consistency_ratio > 0.10:
         raise ValueError(
             f"CR={solution.consistency_ratio:.3f} > 0.10; PO must revise."
@@ -100,7 +113,11 @@ def save_profile_from_bwm(
             json.dumps(solution.criteria),
             json.dumps(solution.weights),
             json.dumps(prefs),
-            json.dumps({"best": solution.best, "worst": solution.worst}),
+            json.dumps({
+                "best": solution.best,
+                "worst": solution.worst,
+                "created_by": created_by,
+            }),
             solution.consistency_ratio,
             now,
         ),

@@ -210,18 +210,34 @@ def run(
                 warnings.append(f"upsert failure {rec.get('huggingface_id')}: {exc!r}")
 
         # Benchmarks: AA primary.
+        aa_rows = 0
         try:
             for row in aa_iter():
                 _append_benchmark(conn, row)
+                aa_rows += 1
         except Exception as exc:
             warnings.append(f"AA source failed: {exc!r}")
 
         # Benchmarks: HF leaderboard fallback.
+        leaderboard_rows = 0
         try:
             for row in leaderboard_iter():
                 _append_benchmark(conn, row)
+                leaderboard_rows += 1
         except Exception as exc:
             warnings.append(f"HF leaderboard source failed: {exc!r}")
+
+        # Alert if every benchmark source other than HF-Leaderboard came back
+        # empty — we're running on the fallback alone, which is degraded
+        # coverage (no LiveCodeBench, AIME, SciCode, etc).
+        if aa_rows == 0:
+            warning_msg = (
+                "WARN: zero non-HF-Leaderboard benchmark sources yielded data "
+                "this run; ingestion degraded to HF-Leaderboard fallback only. "
+                f"AA skip_count={artificial_analysis.SKIPPED_DUE_TO_MISSING_KEY}."
+            )
+            log.warning(warning_msg)
+            warnings.append(warning_msg)
 
         conn.execute(
             """

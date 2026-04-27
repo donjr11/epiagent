@@ -6,9 +6,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from agents.agent2_scoring import capabilities as cap_mod
 from agents.agent2_scoring import scorer
 from core.database import get_conn
-from core.models.dto import ScoreRequest
+from core.models.dto import CAPABILITIES, ScoreRequest
 
 
 def _now() -> str:
@@ -38,7 +39,9 @@ def _seed_model(
         (hf_id, name, "test", params_b, license_spdx, whitelist, context_window, now, now),
     )
     mid = int(cur.lastrowid)
-    for c in caps or ["text"]:
+    # Default to a generic text+reasoning model; tests that exercise tag
+    # filtering should pass an explicit `caps`.
+    for c in caps or ["text", "reasoning"]:
         conn.execute(
             "INSERT INTO model_capabilities (model_id, capability) VALUES (?,?)",
             (mid, c),
@@ -93,14 +96,18 @@ def test_vram_filter_eliminates_oversized_models(tmp_db):
 def test_missing_benchmark_on_selected_capability_drops_to_zero(tmp_db):
     """Design §6.3: a model missing a benchmark in any selected capability scores 0."""
     with get_conn(tmp_db) as conn:
-        # Model A has both reasoning (MMLU-Pro) and coding (LiveCodeBench) benchmarks
+        # Both models advertise reasoning + coding so the tag filter doesn't
+        # cull them; the test isolates the *missing benchmark* behavior.
         _seed_model(conn, "a/full", "Full", 7.0, 8192, "apache-2.0", 1,
                     {"MMLU-Pro": 75.0, "LiveCodeBench": 50.0},
-                    [("fp16", 14.0)])
-        # Model B only has reasoning; should zero out when coding is selected too
+                    [("fp16", 14.0)],
+                    caps=["text", "reasoning", "coding"])
+        # Model B only has reasoning benchmarks; should zero out when coding
+        # is selected too.
         _seed_model(conn, "b/part", "Partial", 7.0, 8192, "apache-2.0", 1,
                     {"MMLU-Pro": 90.0},
-                    [("fp16", 14.0)])
+                    [("fp16", 14.0)],
+                    caps=["text", "reasoning", "coding"])
 
     with get_conn(tmp_db) as conn:
         resp = scorer.score(
@@ -145,3 +152,86 @@ def test_empty_shortlist_returns_diagnostic(tmp_db):
 def test_geometric_mean_zero_anywhere_is_zero():
     assert scorer._geometric_mean([0.9, 0.0, 0.7]) == 0.0
     assert scorer._geometric_mean([0.25, 1.0]) == pytest.approx(0.5, abs=1e-9)
+
+
+def _seed_capability_property_corpus(conn) -> None:
+    """Seed two models per capability: one with the matching tag, one without.
+
+    The model lacking the tag must be excluded from the ranking; the tagged
+    model is the only legal answer when its capability is queried.
+    """
+    rich_bench = {
+        "MMLU-Pro": 70.0, "GPQA-Diamond": 40.0, "MATH-500": 60.0, "AIME": 25.0,
+        "LiveCodeBench": 45.0, "SWE-Bench-Verified": 20.0, "RULER": 80.0,
+        "IFEval": 85.0, "Terminal-Bench": 50.0, "MMBench": 75.0, "MMMU": 50.0,
+        "AudioBench": 60.0, "MMAU": 55.0,
+    }
+    # tag-bearing variants
+    _seed_model(conn, "tag/coding", "TagCoding", 7.0, 8192, "apache-2.0", 1,
+                rich_bench, [("fp16", 14.0)],
+                caps=["text", "reasoning", "coding", "tools"])
+    _seed_model(conn, "tag/reasoning", "TagReasoning", 7.0, 8192, "apache-2.0", 1,
+                rich_bench, [("fp16", 14.0)],
+                caps=["text", "reasoning"])
+    _seed_model(conn, "tag/tools", "TagTools", 7.0, 8192, "apache-2.0", 1,
+                rich_bench, [("fp16", 14.0)],
+                caps=["text", "reasoning", "tools"])
+    _seed_model(conn, "tag/vision", "TagVision", 7.0, 8192, "apache-2.0", 1,
+                rich_bench, [("fp16", 14.0)],
+                caps=["text", "vision"])
+    _seed_model(conn, "tag/audio", "TagAudio", 7.0, 8192, "apache-2.0", 1,
+                rich_bench, [("fp16", 14.0)],
+                caps=["text", "audio"])
+    # untagged "text-only" variant — must NEVER appear under tag-gated capability
+    _seed_model(conn, "untagged/plain", "Untagged", 7.0, 8192, "apache-2.0", 1,
+                rich_bench, [("fp16", 14.0)],
+                caps=["text"])
+
+
+@pytest.mark.parametrize("capability", CAPABILITIES)
+def test_capability_required_tag_filters_untagged_models(tmp_db, capability):
+    """For each of the 7 capabilities, a model lacking the corresponding
+    required tag (if any) MUST NOT appear in the ranking.
+
+    For capabilities whose required tag is None (cross-cutting), the property
+    is vacuous and any model is permitted.
+    """
+    with get_conn(tmp_db) as conn:
+        _seed_capability_property_corpus(conn)
+
+    with get_conn(tmp_db) as conn:
+        resp = scorer.score(conn, ScoreRequest(capabilities=[capability]))
+
+    required_tag = cap_mod.CAPABILITY_REQUIRED_TAG.get(capability)
+    if required_tag is None:
+        # No tag-gate; we still expect at least one ranked model from the corpus.
+        assert resp.shortlist_size >= 1, (
+            f"capability={capability} (cross-cutting): expected non-empty "
+            f"shortlist, got {resp.shortlist_size}"
+        )
+        return
+
+    # Tag-gated: every ranked model must carry the required tag.
+    with get_conn(tmp_db) as conn:
+        for row in resp.ranked:
+            mid = conn.execute(
+                "SELECT id FROM models WHERE huggingface_id = ?",
+                (row.huggingface_id,),
+            ).fetchone()["id"]
+            tags = {
+                r["capability"]
+                for r in conn.execute(
+                    "SELECT capability FROM model_capabilities WHERE model_id=?",
+                    (mid,),
+                )
+            }
+            assert required_tag in tags, (
+                f"capability={capability}: ranked model {row.huggingface_id} "
+                f"lacks required tag '{required_tag}' (its tags: {tags})"
+            )
+
+    # And the untagged plain-text model must be excluded for tag-gated caps.
+    ranked_ids = {r.huggingface_id for r in resp.ranked}
+    assert "untagged/plain" not in ranked_ids, (
+        f"capability={capability}: untagged/plain leaked into ranking"
+    )

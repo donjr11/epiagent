@@ -84,14 +84,30 @@ CAPABILITY_CRITERIA: dict[str, list[Criterion]] = {
 
 
 # Gate tags: if a capability requires a capability-tag, add it here so that
-# Stage 1 filter can apply it. Maps capability -> required model_capabilities tag.
+# Stage 1 hard filter 3 (design §6.1) can apply it. Maps capability ->
+# required model_capabilities tag.
+#
+# A `None` value means "no capability-tag gate for this capability"; in that
+# case the capability is treated as a cross-cutting concern that's already
+# constrained by other Stage 1 filters (e.g. context_window for long-context,
+# or VRAM/throughput for cost). Each `None` below is an explicit decision,
+# not a missing TODO.
 CAPABILITY_REQUIRED_TAG: dict[str, str | None] = {
-    "coding": None,
-    "reasoning": None,
+    # Specialized capability: model must declare "coding" support.
+    "coding": "coding",
+    # Reasoning is a primary capability for any text LLM; we still gate on
+    # the "reasoning" tag so we don't return e.g. a pure speech-to-text model.
+    "reasoning": "reasoning",
+    # Cross-cutting: gated by min context_window in the hard filter, not by
+    # a capability tag. A long-context query is about *how much* context the
+    # model accepts, which is a model-field constraint already covered.
     "rag_long_context": None,
-    "agentic": None,
+    # Agentic = function/tool calling. The model must advertise "tools".
+    "agentic": "tools",
     "vision_language": "vision",
     "audio_language": "audio",
+    # Cross-cutting cost preference. Any model is eligible; the scorer
+    # ranks by min_vram_gb / throughput / lightweight benchmarks.
     "minimum_cost": None,
 }
 

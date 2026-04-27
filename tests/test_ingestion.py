@@ -1,9 +1,11 @@
 """Integration test for the ingestion service against mocked HF/AA iterators."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone, timedelta
 
 from agents.agent1_discovery import ingest
+from agents.agent1_discovery.sources import artificial_analysis as aa
 from core.database import get_conn
 
 
@@ -131,3 +133,51 @@ def test_ingestion_change_log_records_license_change(tmp_db):
         ).fetchall()
     fields = {c["field"] for c in changes}
     assert "license_spdx" in fields
+
+
+def test_aa_missing_key_logs_error_and_increments_counter(tmp_db, monkeypatch, caplog):
+    """When ARTIFICIAL_ANALYSIS_KEY is unset, fetch_all must:
+      - log at ERROR (not WARNING)
+      - increment SKIPPED_DUE_TO_MISSING_KEY
+      - yield nothing (still iterable; ingest must not require the key)
+    """
+    monkeypatch.setattr(aa.config, "ARTIFICIAL_ANALYSIS_KEY", "")
+    before = aa.SKIPPED_DUE_TO_MISSING_KEY
+
+    with caplog.at_level(logging.ERROR, logger=aa.log.name):
+        rows = list(aa.fetch_all())
+
+    assert rows == []
+    assert aa.SKIPPED_DUE_TO_MISSING_KEY == before + 1
+    assert any(
+        "Artificial Analysis key not configured" in rec.message
+        and rec.levelno == logging.ERROR
+        for rec in caplog.records
+    ), f"expected ERROR log; got {[(r.levelname, r.message) for r in caplog.records]}"
+
+
+def test_ingest_emits_warn_alert_when_only_hf_leaderboard_yields(tmp_db):
+    """If AA produces 0 rows (the only non-HF-Leaderboard benchmark source),
+    the ingest summary must contain a WARN-prefixed alert."""
+    summary = ingest.run(
+        hf_iter=lambda: _hf_fixture(),
+        aa_iter=lambda: iter(()),                # AA empty
+        leaderboard_iter=lambda: iter(()),       # also empty; doesn't matter
+    )
+    warns = [w for w in summary["warnings"] if w.startswith("WARN:")]
+    assert warns, (
+        f"expected a WARN-prefixed alert for empty non-HF-Leaderboard sources; "
+        f"got warnings={summary['warnings']}"
+    )
+    assert "non-HF-Leaderboard" in warns[0]
+
+
+def test_ingest_no_warn_alert_when_aa_yields_rows(tmp_db):
+    """Sanity: when AA produces rows, the WARN alert must NOT fire."""
+    summary = ingest.run(
+        hf_iter=lambda: _hf_fixture(),
+        aa_iter=lambda: _aa_fixture(),
+        leaderboard_iter=lambda: iter(()),
+    )
+    warns = [w for w in summary["warnings"] if w.startswith("WARN:")]
+    assert not warns, f"unexpected WARN alert: {warns}"

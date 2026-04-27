@@ -1,8 +1,10 @@
 """Artificial Analysis client: primary per-capability benchmarks.
 
 Uses AA's public models endpoint. ToS verification is pending (Open Item #5);
-this client logs a single warning when no API key is configured and returns
-an empty iterator so ingestion degrades gracefully to the HF fallback.
+this client logs an ERROR (not a silent warning) when no API key is configured
+and returns an empty iterator so ingestion degrades gracefully to the HF
+fallback. The skip count is tracked in `SKIPPED_DUE_TO_MISSING_KEY` so the
+ingest summary can surface chronic mis-configuration.
 """
 from __future__ import annotations
 
@@ -15,6 +17,11 @@ import httpx
 from core import config
 
 log = logging.getLogger(__name__)
+
+
+# Process-lifetime counter incremented every time fetch_all is called without
+# an API key configured. Read by the ingest orchestrator for summary alerts.
+SKIPPED_DUE_TO_MISSING_KEY: int = 0
 
 
 # Map AA metric labels onto the canonical metric names used by scoring_profiles.
@@ -30,9 +37,19 @@ AA_METRIC_MAP = {
 
 
 def fetch_all() -> Iterator[dict]:
-    """Yield benchmark rows {huggingface_id, metric_name, score, source, ...}."""
+    """Yield benchmark rows {huggingface_id, metric_name, score, source, ...}.
+
+    If the API key is unset, logs an ERROR (so the operator notices) and
+    returns an empty iterator. The key is NOT required — ingestion proceeds.
+    """
+    global SKIPPED_DUE_TO_MISSING_KEY
     if not config.ARTIFICIAL_ANALYSIS_KEY:
-        log.warning("ARTIFICIAL_ANALYSIS_KEY not configured; AA source skipped.")
+        SKIPPED_DUE_TO_MISSING_KEY += 1
+        log.error(
+            "Artificial Analysis key not configured; skipping AA ingestion "
+            "(skip_count=%d). Falling back to HF-Leaderboard only.",
+            SKIPPED_DUE_TO_MISSING_KEY,
+        )
         return
     headers = {
         "Accept": "application/json",

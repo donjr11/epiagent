@@ -109,7 +109,14 @@ def _recent_ingestion_failure(conn: sqlite3.Connection, since: str | None) -> st
     return None
 
 
-def build_and_send() -> dict:
+def compose_digest() -> dict:
+    """Compose the digest: load state, render HTML, persist new snapshot.
+
+    Does NOT send email; that's `build_and_send`'s responsibility. The HTTP
+    endpoint (GET /digest/daily) calls this and returns the rendered HTML.
+    Returns dict with keys: html, new_model_count, rank_change_count,
+    ingestion_failure.
+    """
     init_db()
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
@@ -144,17 +151,29 @@ def build_and_send() -> dict:
         ingestion_failure=ingestion_failure,
         threshold=config.RANK_CHANGE_THRESHOLD,
     )
+    return {
+        "html": html,
+        "date": now[:10],
+        "new_model_count": len(new_models),
+        "rank_change_count": len(rank_changes),
+        "ingestion_failure": ingestion_failure,
+    }
+
+
+def build_and_send() -> dict:
+    """Compose the digest and email it to ADMIN_EMAILS."""
+    composed = compose_digest()
     err = sender.send_html(
-        subject=f"EpiAgent digest {now[:10]}",
-        html=html,
+        subject=f"EpiAgent digest {composed['date']}",
+        html=composed["html"],
         to=config.ADMIN_EMAILS,
     )
     return {
         "sent": err is None,
         "error": err,
-        "new_model_count": len(new_models),
-        "rank_change_count": len(rank_changes),
-        "ingestion_failure": ingestion_failure,
+        "new_model_count": composed["new_model_count"],
+        "rank_change_count": composed["rank_change_count"],
+        "ingestion_failure": composed["ingestion_failure"],
     }
 
 
